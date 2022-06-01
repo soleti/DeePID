@@ -1,0 +1,8 @@
+tensorflow
+tqdm
+numpy
+pandas
+uproot
+awkward
+matplotlib
+scikit-learn
