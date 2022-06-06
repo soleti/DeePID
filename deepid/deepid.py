@@ -28,7 +28,7 @@ def build_global_df(arrays, global_vars):
     return df
 
 
-def prepare_dataset(arrays, scaler, global_vars, n_bins=101, maxlen=50, fit=False):  
+def prepare_dataset(arrays, scaler, global_vars, new_vars, n_bins=101, maxlen=50, fit=False):  
     df_global = build_global_df(arrays, global_vars)
 
     mask = arrays['detsh._dx']>0
@@ -40,9 +40,9 @@ def prepare_dataset(arrays, scaler, global_vars, n_bins=101, maxlen=50, fit=Fals
     df_global["dedx"] = dedx_median
 
     if fit:
-        global_array = scaler.fit_transform(df_global[global_vars].to_numpy())
+        global_array = scaler.fit_transform(df_global[new_vars].to_numpy())
     else:
-        global_array = scaler.transform(df_global[global_vars].to_numpy())
+        global_array = scaler.transform(df_global[new_vars].to_numpy())
         
     residual = arrays['detsh._resid'][mask]
     residual_digitized = [np.digitize(r, bins=np.linspace(-10,10,n_bins)) for r in residual]
