@@ -7,6 +7,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_curve, roc_auc_score
 
 from tensorflow.keras.preprocessing import sequence
+from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.layers import Dense, Embedding, Concatenate, LSTM, Dropout, Reshape, Bidirectional
 
@@ -16,8 +17,10 @@ def build_global_df(arrays, global_vars):
     df["muredchisq"] = arrays["dm"]["chisq"]/arrays["dm"]["ndof"]
     df["de_status"] = arrays["de"]["status"]
     df["t0"] = arrays["de"]["t0"]
+    df["p0"] = arrays["deent"]["p0"]
     df["td"] = arrays["deent"]["td"]
     df["d0"] = arrays["deent"]["d0"]
+    df["z0"] = arrays["deent"]["z0"]
     df["om"] = arrays["deent"]["om"]
     df["ue_status"] = arrays["ue"]["status"]
     df["mom"] = arrays["deent"]["mom"]
@@ -35,7 +38,6 @@ def prepare_dataset(arrays, scaler, global_vars, new_vars, n_bins=101, maxlen=50
     dedx = (arrays['detsh._edep'][mask]/arrays['detsh._dx'][mask]).to_list()
     dedx_digitized = [np.digitize(e, bins=np.linspace(-0.005,0.02,n_bins)) for e in dedx]
     dedx_padded = sequence.pad_sequences(dedx_digitized, dtype='int32', maxlen=maxlen, padding='post', truncating='post')
-    
     dedx_median = [np.median(e) for e in dedx]
     df_global["dedx"] = dedx_median
 
@@ -50,8 +52,12 @@ def prepare_dataset(arrays, scaler, global_vars, new_vars, n_bins=101, maxlen=50
 
     plane = arrays['detsh._plane'][mask]+1
     plane_padded = sequence.pad_sequences(plane, dtype='int32', maxlen=maxlen, padding='post', truncating='post')
+    
+    wdist = arrays['detsh._wdist'][mask]
+    wdist_digitized = [np.digitize(w, bins=np.linspace(0,900,n_bins)) for w in wdist]
+    wdist_padded = sequence.pad_sequences(wdist_digitized, dtype='int32', maxlen=maxlen, padding='post', truncating='post')
 
-    return df_global, global_array, dedx_padded, residual_padded, plane_padded
+    return df_global, global_array, dedx_padded, residual_padded, plane_padded, wdist_padded
 
 def build_lstm_network(max_features, embedding_size=64, maxlen=50):
     model = Sequential()
@@ -61,7 +67,8 @@ def build_lstm_network(max_features, embedding_size=64, maxlen=50):
     model.add(Dropout(0.2))
     model.add(Dense(100))
     model.add(Dense(1, activation='sigmoid'))
-    model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+    opt = Adam()
+    model.compile(loss='binary_crossentropy', optimizer=opt, metrics=['accuracy'])
     
     return model
 
@@ -80,20 +87,22 @@ def train_model(model, x, y, x_valid, y_valid, epochs=20):
     
     return history
 
-def run_network(variable, target, embedding_size=64, maxlen=50, epochs=20):
+def run_network(variable, target, embedding_size=64, maxlen=50, epochs=20, run=True):
     max_features = np.max(variable)+1
-    
-    model = build_lstm_network(max_features, embedding_size, maxlen)
+    model = build_lstm_network(max_features, embedding_size, maxlen=maxlen)
     x_train, x_test, x_valid, y_train, y_test, y_valid = build_sample(variable, target)
     samples =  x_train, x_test, x_valid, y_train, y_test, y_valid
-    history = train_model(model, x_train, y_train, x_valid, y_valid, epochs=epochs)
     
-    prediction = model.predict(x_test).ravel()
-    fpr, tpr, th = roc_curve(y_test,  prediction)
-    auc = roc_auc_score(y_test, prediction)
-    
-    return samples, model, history, fpr, tpr, auc, prediction
+    if run:
+        history = train_model(model, x_train, y_train, x_valid, y_valid, epochs=epochs)
 
+        prediction = model.predict(x_test).ravel()
+        fpr, tpr, th = roc_curve(y_test,  prediction)
+        auc = roc_auc_score(y_test, prediction)
+    
+        return samples, model, history, fpr, tpr, auc, prediction
+
+    return samples, model, None, None, None, None, None
 
 def model_global(n_variables):
     model_global = Sequential()
@@ -122,7 +131,7 @@ def model_deepid(n_bins, n_variables, embedding_size, maxlen):
     this_global = model_global(n_variables)
     
     mergedOutput = Concatenate()([model_multi.output, this_global.output])
-    out = Dense(4*4, activation='relu', input_shape=(4,))(mergedOutput)
+    out = Dense(32, activation='relu', input_shape=(5,))(mergedOutput)
     out = Dropout(0.2)(out)
     out = Dense(1, activation='sigmoid')(out)
 
@@ -130,8 +139,29 @@ def model_deepid(n_bins, n_variables, embedding_size, maxlen):
         [model_multi.input, this_global.input],
         out
     ) 
+    opt = Adam(learning_rate=2e-5)
     model_deepid.compile(loss='binary_crossentropy',
-                         optimizer='adam',
+                         optimizer=opt,
                          metrics=['accuracy'])
     
     return model_deepid
+
+def model_combined(lstm_models, n_variables):
+
+    this_global = model_global(n_variables)
+    
+    lstm_models.append(this_global)
+    mergedOutput = Concatenate()([model.output for model in lstm_models])
+    out = Dense(32, activation='relu', input_shape=(5,))(mergedOutput)
+    out = Dropout(0.2)(out)
+    out = Dense(1, activation='sigmoid')(out)
+
+    model_combined = Model(
+        [model.input for model in lstm_models],
+        out
+    ) 
+    model_combined.compile(loss='binary_crossentropy',
+                         optimizer='adam',
+                         metrics=['accuracy'])
+    
+    return model_combined
